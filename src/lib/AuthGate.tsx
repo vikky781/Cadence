@@ -48,6 +48,8 @@ export function AuthGate({ children }: { children: (session: Session) => ReactNo
   const [email, setEmail] = useState("")
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null)
   const [sending, setSending] = useState(false)
+  const [mode, setMode] = useState<"link" | "password">("password")
+  const [password, setPassword] = useState("")
 
   if (auth.status === "loading") {
     return (
@@ -67,11 +69,21 @@ export function AuthGate({ children }: { children: (session: Session) => ReactNo
     return <AppShell email={auth.session.user.email}>{children(auth.session)}</AppShell>
   }
 
-  async function sendMagicLink(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault()
     setSending(true)
     setMessage(null)
-    const { error } = await getSupabaseClient().auth.signInWithOtp({
+    const supabase = getSupabaseClient()
+
+    if (mode === "password") {
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      setSending(false)
+      // On success onAuthStateChange swaps this screen for the app.
+      if (error) setMessage({ tone: "error", text: `Could not sign in: ${error.message}` })
+      return
+    }
+
+    const { error } = await supabase.auth.signInWithOtp({
       email,
       options: { emailRedirectTo: window.location.href },
     })
@@ -83,15 +95,19 @@ export function AuthGate({ children }: { children: (session: Session) => ReactNo
     )
   }
 
+  const idleLabel = mode === "password" ? "Sign in" : "Send magic link"
+
   return (
     <AppShell>
       <div className="mx-auto mt-10 max-w-sm">
         <p className="eyebrow">Researcher access</p>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight">Sign in to build and publish studies</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          We email you a one-time link. Participants never need an account.
+          {mode === "password"
+            ? "Sign in with your email and password. Participants never need an account."
+            : "We email you a one-time link. Participants never need an account."}
         </p>
-        <form className="card mt-6 flex flex-col gap-4" onSubmit={(e) => void sendMagicLink(e)}>
+        <form className="card mt-6 flex flex-col gap-4" onSubmit={(e) => void submit(e)}>
           <label className="lbl">
             Email
             <input
@@ -104,14 +120,37 @@ export function AuthGate({ children }: { children: (session: Session) => ReactNo
               onChange={(e) => setEmail(e.target.value)}
             />
           </label>
+          {mode === "password" && (
+            <label className="lbl">
+              Password
+              <input
+                type="password"
+                required
+                autoComplete="current-password"
+                className="field"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </label>
+          )}
           <button type="submit" className="btn btn-primary" disabled={sending}>
-            {sending ? "Sending…" : "Send magic link"}
+            {sending ? (mode === "password" ? "Signing in…" : "Sending…") : idleLabel}
           </button>
           {message && (
             <p role="status" className={message.tone === "error" ? "text-sm text-destructive" : "text-sm text-signal"}>
               {message.text}
             </p>
           )}
+          <button
+            type="button"
+            className="btn btn-quiet self-center hover:text-foreground"
+            onClick={() => {
+              setMode(mode === "password" ? "link" : "password")
+              setMessage(null)
+            }}
+          >
+            {mode === "password" ? "Email me a sign-in link instead" : "Use a password instead"}
+          </button>
         </form>
       </div>
     </AppShell>
