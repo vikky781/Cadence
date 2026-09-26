@@ -2,3 +2,4 @@
 export * from "./frameSource"
 export * from "./frameClock"
 export * from "./frameStats"
+export * from "./phaseScheduler"
