@@ -74,7 +74,14 @@ export class TrialRunner {
 
     const currentPhaseIndex = this.phaseScheduler.getCurrentPhaseIndex()
     if (!this.acceptInPhases.includes(currentPhaseIndex)) return
-    if (!response.allowedKeys.includes(event.key)) return
+    // Caps Lock / Shift turn "a" into "A", so single-character keys match
+    // case-insensitively; the recorded response is the configured key.
+    const matchedKey = response.allowedKeys.find(
+      (key) =>
+        key === event.key ||
+        (key.length === 1 && event.key.length === 1 && key.toLowerCase() === event.key.toLowerCase()),
+    )
+    if (matchedKey === undefined) return
 
     // timeoutMs is treated as informational only in this version: the
     // response phase's own duration (fixed frame count, or "untilResponse")
@@ -83,7 +90,7 @@ export class TrialRunner {
     // and the phase's duration -- the DSL author/linter are expected to
     // keep those in sync. That reconciliation is an explicit scope cut.
 
-    this.response = event.key
+    this.response = matchedKey
     this.responseTimestamp = event.timestamp
     this.reactionTimeMs = event.timestamp - this.currentPhaseOnsetTimestamp
 
