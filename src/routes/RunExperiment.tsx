@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react"
 
-import { ExperimentSchema, type Experiment, type Node, type Phase } from "../dsl"
+import { ExperimentSchema, evaluateExpression, type Experiment, type Node, type Phase } from "../dsl"
 import { BrowserFrameSource, TrialRunner, bufferTrial } from "../engine"
+import { SeededRandom } from "../engine/rng"
+import { expandBlock, shouldBreakAfter } from "../engine/scheduler"
 import {
   Presenter,
   createSession,
@@ -15,11 +17,29 @@ import {
 } from "../runtime"
 
 type TrialNode = Extract<Node, { type: "trial" }>
+type BlockNode = Extract<Node, { type: "block" }>
 type EndNode = Extract<Node, { type: "end" }>
+type Row = Record<string, string | number>
 
-function drawPhase(presenter: Presenter, phase: Phase): void {
+interface TrialContext {
+  row: Row | null
+  blockId: string | null
+  practice: boolean
+  rowIndex: number | null
+  repetitionIndex: number | null
+  blockCorrect: number
+  blockAnswered: number
+}
+
+function drawPhase(presenter: Presenter, phase: Phase, row: Row | null): void {
   if (phase.content?.kind === "text") {
     presenter.drawText(phase.content.value)
+    return
+  }
+  // Block trials fill "column" content from the current row, e.g. the
+  // stimulus text for this trial.
+  if (phase.content?.kind === "column" && row && phase.content.value in row) {
+    presenter.drawText(String(row[phase.content.value]))
     return
   }
   if (phase.type === "fixation") {
@@ -42,10 +62,18 @@ export default function RunExperiment() {
   const sequenceRef = useRef(0)
   const refreshHzRef = useRef<number | null>(null)
   const declinedRef = useRef(false)
+  const seedRef = useRef<string>("")
+  const breakResolveRef = useRef<(() => void) | null>(null)
+  const lastTrialRef = useRef<{ response: string | null; rt: number | null; correct: boolean | null }>({
+    response: null,
+    rt: null,
+    correct: null,
+  })
 
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [currentNode, setCurrentNode] = useState<Node | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [breakInfo, setBreakInfo] = useState<{ done: number; total: number } | null>(null)
 
   useEffect(() => {
     if (!sessionId) return
@@ -72,7 +100,14 @@ export default function RunExperiment() {
       const node = currentNodeRef.current
       if (!node || e.repeat) return
 
-      if (node.type === "trial") {
+      if (breakResolveRef.current) {
+        if (e.key === " ") {
+          e.preventDefault()
+          breakResolveRef.current()
+        }
+        return
+      }
+      if (node.type === "trial" || node.type === "block") {
         if (e.key === " ") e.preventDefault()
         runnerRef.current?.submitInput({ key: e.key, timestamp: performance.now() })
       } else if (node.type === "instructions" && node.advanceBy === "key") {
@@ -112,7 +147,10 @@ export default function RunExperiment() {
         if (fetchError) throw new Error(`Could not load experiment version: ${fetchError.message}`)
 
         const experiment = ExperimentSchema.parse(data.dsl)
-        const newSessionId = await createSession(versionId, crypto.randomUUID())
+        // The session seed drives block randomization, so a session's trial
+        // order is reproducible from the seed stored with it.
+        seedRef.current = crypto.randomUUID()
+        const newSessionId = await createSession(versionId, seedRef.current)
 
         experimentRef.current = experiment
         sessionIdRef.current = newSessionId
@@ -140,12 +178,15 @@ export default function RunExperiment() {
         case "trial":
           await runTrialNode(node)
           return
+        case "block":
+          await runBlockNode(node)
+          return
         case "end":
           await finishAtEnd(node)
           return
         default:
           throw new Error(
-            `Unsupported node type "${(node as { type: string }).type}" (node "${nodeId}"): this runtime supports consent, instructions, trial, and end nodes only.`,
+            `Unsupported node type "${(node as { type: string }).type}" (node "${nodeId}"): this runtime supports consent, instructions, trial, block, and end nodes only.`,
           )
       }
     } catch (err) {
@@ -153,15 +194,16 @@ export default function RunExperiment() {
     }
   }
 
-  async function runTrialNode(node: TrialNode): Promise<void> {
+  async function runTrialInstance(node: TrialNode, ctx: TrialContext): Promise<boolean | null> {
     const presenter = presenterRef.current
     const sid = sessionIdRef.current
-    if (!presenter || !sid) throw new Error("Runtime is not ready to run a trial.")
+    const experiment = experimentRef.current
+    if (!presenter || !sid || !experiment) throw new Error("Runtime is not ready to run a trial.")
 
     const frameSource = new BrowserFrameSource()
 
-    // The canvas is hidden until a trial node is current; wait a frame for
-    // React to show it, then re-measure so the backing store isn't 0x0.
+    // The canvas is hidden between screens; wait a frame for React to show
+    // it, then re-measure so the backing store matches its on-screen size.
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
     presenter.resize()
 
@@ -173,14 +215,47 @@ export default function RunExperiment() {
     }
     const refreshHz = refreshHzRef.current
 
-    // The keydown handler must not route input to a stale runner.
+    // Row columns whose names match a declared variable become that
+    // variable for this trial (e.g. the row's correctKey).
+    const declared = experiment.variables.map((v) => v.name)
+    const variables: Record<string, string | number | boolean> = {}
+    if (ctx.row) {
+      for (const name of declared) if (name in ctx.row) variables[name] = ctx.row[name]
+    }
+    const last = lastTrialRef.current
+    const correctAnswer = node.response?.correctAnswer
+    const expected =
+      correctAnswer === undefined
+        ? undefined
+        : evaluateExpression(correctAnswer, declared, {
+            trialIndex: sequenceRef.current,
+            lastResponse: last.response,
+            lastRT: last.rt,
+            lastCorrect: last.correct,
+            blockAccuracy: ctx.blockAnswered > 0 ? ctx.blockCorrect / ctx.blockAnswered : null,
+            variables,
+          })
+
     const runner = new TrialRunner(frameSource, refreshHz)
     runnerRef.current = runner
     const result = await runner.runTrial(node, (phaseIndex) => {
-      drawPhase(presenter, node.phases[phaseIndex])
+      const phase = node.phases[phaseIndex]
+      if (phase.type === "feedback" && expected !== undefined) {
+        const response = runner.getResponse()
+        if (response === null) presenter.drawText("Too slow")
+        else presenter.drawFeedback(String(response) === String(expected))
+        return
+      }
+      drawPhase(presenter, phase, ctx.row)
     })
     runnerRef.current = null
     presenter.drawBlank()
+
+    const correct =
+      expected === undefined
+        ? null
+        : result.response !== null && String(result.response) === String(expected)
+    lastTrialRef.current = { response: result.response, rt: result.reactionTimeMs, correct }
 
     sequenceRef.current += 1
     // Quality flag is hard-coded "good" in this version; computing it from
@@ -188,13 +263,17 @@ export default function RunExperiment() {
     await bufferTrial({
       sessionId: sid,
       sequenceNumber: sequenceRef.current,
-      nodeId: node.id,
-      stimulusRow: null,
+      nodeId: ctx.blockId ?? node.id,
+      stimulusRow: ctx.row,
       response: result.response,
       reactionTimeMs: result.reactionTimeMs,
-      correct: null,
+      correct,
       timingEvidence: {
         refreshHz,
+        trialTemplate: node.id,
+        practice: ctx.practice,
+        rowIndex: ctx.rowIndex,
+        repetitionIndex: ctx.repetitionIndex,
         phaseRecords: result.phaseRecords,
         responseTimestamp: result.responseTimestamp,
         timedOut: result.timedOut,
@@ -203,7 +282,65 @@ export default function RunExperiment() {
       uploaded: false,
     })
 
+    return correct
+  }
+
+  async function runTrialNode(node: TrialNode): Promise<void> {
+    await runTrialInstance(node, {
+      row: null,
+      blockId: null,
+      practice: false,
+      rowIndex: null,
+      repetitionIndex: null,
+      blockCorrect: 0,
+      blockAnswered: 0,
+    })
     await enterNode(node.next)
+  }
+
+  async function runBlockNode(block: BlockNode): Promise<void> {
+    const template = experimentRef.current?.nodes[block.trialTemplate]
+    if (!template || template.type !== "trial") {
+      throw new Error(`Block "${block.id}" has no valid trial template ("${block.trialTemplate}").`)
+    }
+
+    // Seeded per block so each block's order is independent but reproducible.
+    const trials = expandBlock(block, new SeededRandom(`${seedRef.current}:${block.id}`))
+    let blockCorrect = 0
+    let blockAnswered = 0
+
+    for (let i = 0; i < trials.length; i++) {
+      const t = trials[i]
+      const correct = await runTrialInstance(template, {
+        row: t.row,
+        blockId: block.id,
+        practice: t.practice,
+        rowIndex: t.rowIndex,
+        repetitionIndex: t.repetitionIndex,
+        blockCorrect,
+        blockAnswered,
+      })
+      if (correct !== null) {
+        blockAnswered += 1
+        if (correct) blockCorrect += 1
+      }
+      if (shouldBreakAfter(i, trials.length, block.breakEveryN)) {
+        await takeBreak(i + 1, trials.length)
+      }
+    }
+
+    await enterNode(block.next)
+  }
+
+  function takeBreak(done: number, total: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      breakResolveRef.current = () => {
+        breakResolveRef.current = null
+        setBreakInfo(null)
+        resolve()
+      }
+      setBreakInfo({ done, total })
+    })
   }
 
   async function finishAtEnd(_node: EndNode): Promise<void> {
@@ -236,7 +373,8 @@ export default function RunExperiment() {
     void enterNode(declineNodeId)
   }
 
-  const inTrial = currentNode?.type === "trial" && !error
+  const inTrial =
+    (currentNode?.type === "trial" || currentNode?.type === "block") && !error && !breakInfo
 
   return (
     <main className="flex min-h-dvh items-center justify-center bg-background px-4 py-10 font-sans text-foreground">
@@ -292,6 +430,24 @@ export default function RunExperiment() {
             ) : (
               <p className="eyebrow">Press any key to continue</p>
             )}
+          </section>
+        )}
+
+        {!error && breakInfo && (
+          <section className="card flex flex-col gap-5 p-6 text-center sm:p-8">
+            <p className="eyebrow">Break</p>
+            <p className="text-xl font-medium">Take a short rest.</p>
+            <p className="font-mono text-sm text-muted-foreground tabular-nums">
+              {breakInfo.done} of {breakInfo.total} trials done
+            </p>
+            <button
+              type="button"
+              className="btn btn-primary self-center"
+              onClick={() => breakResolveRef.current?.()}
+            >
+              Continue
+            </button>
+            <p className="eyebrow">or press Space</p>
           </section>
         )}
 

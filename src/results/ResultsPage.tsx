@@ -12,6 +12,7 @@ interface TrialRow {
   reaction_time_ms: number | null
   correct: boolean | null
   quality_flag: string
+  stimulus_row: Record<string, string | number> | null
 }
 
 function Results({ versionId }: { versionId: string }) {
@@ -61,7 +62,7 @@ function Results({ versionId }: { versionId: string }) {
 
         const { data: trials, error: trialsError } = await supabase
           .from("trials")
-          .select("session_id, sequence_number, node_id, response, reaction_time_ms, correct, quality_flag")
+          .select("session_id, sequence_number, node_id, response, reaction_time_ms, correct, quality_flag, stimulus_row")
           .in("session_id", sessionIds)
           .order("session_id")
           .order("sequence_number")
@@ -79,7 +80,14 @@ function Results({ versionId }: { versionId: string }) {
 
   function downloadCsv() {
     if (!rows) return
-    const csv = Papa.unparse(rows)
+    // Flatten each trial's stimulus row into its own columns so the CSV is
+    // analysis-ready (e.g. congruency as a column, not a JSON blob).
+    const rowKeys = [...new Set(rows.flatMap((r) => Object.keys(r.stimulus_row ?? {})))]
+    const flat = rows.map(({ stimulus_row, ...rest }) => ({
+      ...rest,
+      ...Object.fromEntries(rowKeys.map((k) => [k, stimulus_row?.[k] ?? ""])),
+    }))
+    const csv = Papa.unparse(flat)
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" })
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement("a")
@@ -147,7 +155,7 @@ function Results({ versionId }: { versionId: string }) {
               <table className="w-full border-collapse text-left text-sm">
                 <thead>
                   <tr className="border-b bg-muted/60">
-                    {["Session", "Seq", "Node", "Response", "RT (ms)", "Correct", "Quality"].map((h) => (
+                    {["Session", "Seq", "Node", "Stimulus", "Response", "RT (ms)", "Correct", "Quality"].map((h) => (
                       <th key={h} scope="col" className="eyebrow px-4 py-2.5 font-medium whitespace-nowrap">
                         {h}
                       </th>
@@ -160,6 +168,9 @@ function Results({ versionId }: { versionId: string }) {
                       <td className="px-4 py-2.5 text-muted-foreground">{r.session_id.slice(0, 8)}</td>
                       <td className="px-4 py-2.5">{r.sequence_number}</td>
                       <td className="px-4 py-2.5">{r.node_id}</td>
+                      <td className="px-4 py-2.5 whitespace-nowrap text-muted-foreground">
+                        {r.stimulus_row ? Object.values(r.stimulus_row).join(" · ") : "—"}
+                      </td>
                       <td className="px-4 py-2.5">{r.response === " " ? "Space" : (r.response ?? "—")}</td>
                       <td className="px-4 py-2.5 text-right">{r.reaction_time_ms === null ? "—" : r.reaction_time_ms.toFixed(1)}</td>
                       <td className="px-4 py-2.5">{r.correct === null ? "—" : String(r.correct)}</td>

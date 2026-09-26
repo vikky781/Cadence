@@ -94,6 +94,10 @@ export class TrialRunner {
     }
   }
 
+  getResponse(): string | null {
+    return this.response
+  }
+
   private finishTrial(): void {
     if (!this.phaseScheduler || !this.resolveTrial) return
 
