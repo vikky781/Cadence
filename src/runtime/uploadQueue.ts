@@ -1,15 +1,12 @@
 import { getUnuploadedTrials, markUploaded } from "../engine/localBuffer"
 import { uploadTrial } from "./session"
 
-export function startUploadQueue(sessionId: string, intervalMs = 3000): () => void {
-  let flushing = false
+// Returns a cleanup function (per the original contract) that also carries
+// a `flush` method so callers can await a final upload before finishing.
+export type UploadQueueHandle = (() => void) & { flush: () => Promise<void> }
 
-  async function flush(): Promise<void> {
-    // Skip if a flush is already in flight so interval ticks and the
-    // pagehide flush never upload the same batch concurrently.
-    if (flushing) return
-    flushing = true
-
+export function startUploadQueue(sessionId: string, intervalMs = 3000): UploadQueueHandle {
+  async function runFlush(): Promise<void> {
     try {
       const pending = await getUnuploadedTrials(sessionId)
 
@@ -29,13 +26,24 @@ export function startUploadQueue(sessionId: string, intervalMs = 3000): () => vo
       }
     } catch (error) {
       console.error(`Upload flush failed for session ${sessionId}:`, error)
-    } finally {
-      flushing = false
     }
   }
 
+  // Flushes are chained so they never overlap, and awaiting flush() waits
+  // for every previously requested flush too.
+  let chain: Promise<void> = Promise.resolve()
+  function flush(): Promise<void> {
+    chain = chain.then(runFlush)
+    return chain
+  }
+
+  let tickQueued = false
   const intervalHandle = setInterval(() => {
-    void flush()
+    if (tickQueued) return
+    tickQueued = true
+    void flush().finally(() => {
+      tickQueued = false
+    })
   }, intervalMs)
 
   // Best-effort final flush when the page is being unloaded. This simply
@@ -48,8 +56,9 @@ export function startUploadQueue(sessionId: string, intervalMs = 3000): () => vo
   }
   window.addEventListener("pagehide", onPageHide)
 
-  return () => {
+  const cleanup = () => {
     clearInterval(intervalHandle)
     window.removeEventListener("pagehide", onPageHide)
   }
+  return Object.assign(cleanup, { flush })
 }

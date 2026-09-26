@@ -1,72 +1,20 @@
 import { useEffect, useRef, useState } from "react"
 
-import { ExperimentSchema, type Node, type Phase } from "../dsl"
-import { BrowserFrameSource, TrialRunner, type TrialRunResult } from "../engine"
-import { Presenter, ensureAnonymousSession, runCalibration } from "../runtime"
+import { ExperimentSchema, type Experiment, type Node, type Phase } from "../dsl"
+import { BrowserFrameSource, TrialRunner, bufferTrial } from "../engine"
+import {
+  Presenter,
+  createSession,
+  ensureAnonymousSession,
+  getSupabaseClient,
+  markSessionComplete,
+  runCalibration,
+  startUploadQueue,
+  type UploadQueueHandle,
+} from "../runtime"
 
-// Parsed at module load so any shape mistake fails loudly immediately.
-const experiment = ExperimentSchema.parse({
-  schemaVersion: 1,
-  experimentId: "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  version: 1,
-  meta: {
-    title: "Reaction time smoke test",
-    description: "Press SPACE as soon as the stimulus appears.",
-    authors: ["Cadence"],
-    estimatedMinutes: 1,
-  },
-  assets: [],
-  variables: [],
-  entry: "consent-1",
-  nodes: {
-    "consent-1": {
-      type: "consent",
-      id: "consent-1",
-      markdown: "This is a short reaction-time smoke test. Do you consent to take part?",
-      declineNodeId: "end-1",
-      next: "trial-1",
-    },
-    "trial-1": {
-      type: "trial",
-      id: "trial-1",
-      phases: [
-        { type: "fixation", duration: 500 },
-        {
-          type: "stimulus",
-          duration: "untilResponse",
-          content: { kind: "text", value: "Press SPACE" },
-        },
-      ],
-      response: {
-        allowedKeys: [" "],
-        timeoutMs: 5000,
-        acceptInPhases: [1],
-      },
-      next: "end-1",
-    },
-    "end-1": {
-      type: "end",
-      id: "end-1",
-      message: "Thanks for participating!",
-    },
-  },
-})
-
-function getNode<T extends Node["type"]>(id: string, type: T): Extract<Node, { type: T }> {
-  const node = experiment.nodes[id]
-  if (!node || node.type !== type) {
-    throw new Error(`Smoke-test experiment: node "${id}" is not of type "${type}".`)
-  }
-  return node as Extract<Node, { type: T }>
-}
-
-const consentNode = getNode("consent-1", "consent")
-const trialNode = getNode("trial-1", "trial")
-const endNode = getNode("end-1", "end")
-
-// Module-level so React StrictMode's double-invoked effect doesn't trigger
-// two anonymous sign-ins.
-let sessionPromise: Promise<string> | null = null
+type TrialNode = Extract<Node, { type: "trial" }>
+type EndNode = Extract<Node, { type: "end" }>
 
 function drawPhase(presenter: Presenter, phase: Phase): void {
   if (phase.content?.kind === "text") {
@@ -80,28 +28,33 @@ function drawPhase(presenter: Presenter, phase: Phase): void {
   presenter.drawBlank()
 }
 
-type Stage = "consent" | "running" | "done"
-
 export default function RunExperiment() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const presenterRef = useRef<Presenter | null>(null)
   const runnerRef = useRef<TrialRunner | null>(null)
 
-  const [stage, setStage] = useState<Stage>("consent")
-  const [sessionStatus, setSessionStatus] = useState("Signing in…")
-  const [result, setResult] = useState<TrialRunResult | null>(null)
+  const initStartedRef = useRef(false)
+  const experimentRef = useRef<Experiment | null>(null)
+  const sessionIdRef = useRef<string | null>(null)
+  const currentNodeRef = useRef<Node | null>(null)
+  const queueRef = useRef<UploadQueueHandle | null>(null)
+  const sequenceRef = useRef(0)
+  const refreshHzRef = useRef<number | null>(null)
+  const declinedRef = useRef(false)
+
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [currentNode, setCurrentNode] = useState<Node | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    sessionPromise ??= ensureAnonymousSession()
-    sessionPromise.then(
-      (userId) => setSessionStatus(`Anonymous session: ${userId}`),
-      (err: unknown) =>
-        setSessionStatus(
-          `No Supabase session (smoke test continues locally): ${err instanceof Error ? err.message : String(err)}`,
-        ),
-    )
-  }, [])
+    if (!sessionId) return
+    const queue = startUploadQueue(sessionId)
+    queueRef.current = queue
+    return () => {
+      queue()
+      queueRef.current = null
+    }
+  }, [sessionId])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -115,10 +68,16 @@ export default function RunExperiment() {
     window.addEventListener("resize", onResize)
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!runnerRef.current) return
-      if (e.key === " ") e.preventDefault()
-      if (e.repeat) return
-      runnerRef.current.submitInput({ key: e.key, timestamp: performance.now() })
+      const node = currentNodeRef.current
+      if (!node || e.repeat) return
+
+      if (node.type === "trial") {
+        if (e.key === " ") e.preventDefault()
+        runnerRef.current?.submitInput({ key: e.key, timestamp: performance.now() })
+      } else if (node.type === "instructions" && node.advanceBy === "key") {
+        e.preventDefault()
+        void enterNode(node.next)
+      }
     }
     window.addEventListener("keydown", onKeyDown)
 
@@ -127,71 +86,199 @@ export default function RunExperiment() {
       window.removeEventListener("keydown", onKeyDown)
       presenterRef.current = null
     }
+    // enterNode only reads refs and stable setters, so it is safe to omit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function handleContinue() {
-    const presenter = presenterRef.current
-    if (!presenter) return
+  useEffect(() => {
+    // Ref guard: React StrictMode double-invokes effects in development and
+    // this must not create two sessions.
+    if (initStartedRef.current) return
+    initStartedRef.current = true
 
-    setStage("running")
-    setError(null)
+    void (async () => {
+      try {
+        const versionId = new URLSearchParams(window.location.search).get("version")
+        if (!versionId) throw new Error("Missing ?version=<experiment version id> in the URL.")
+
+        await ensureAnonymousSession()
+
+        const { data, error: fetchError } = await getSupabaseClient()
+          .from("experiment_versions")
+          .select("dsl")
+          .eq("id", versionId)
+          .single()
+        if (fetchError) throw new Error(`Could not load experiment version: ${fetchError.message}`)
+
+        const experiment = ExperimentSchema.parse(data.dsl)
+        const newSessionId = await createSession(versionId, crypto.randomUUID())
+
+        experimentRef.current = experiment
+        sessionIdRef.current = newSessionId
+        setSessionId(newSessionId)
+        await enterNode(experiment.entry)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function enterNode(nodeId: string): Promise<void> {
     try {
-      const frameSource = new BrowserFrameSource()
+      const node = experimentRef.current?.nodes[nodeId]
+      if (!node) throw new Error(`Node "${nodeId}" does not exist in this experiment.`)
 
-      // Measure the real display refresh rate so phase frame counts match
-      // the actual monitor rather than assuming 60Hz.
-      const calibration = await runCalibration(frameSource, { sampleFrames: 30 })
-      const refreshHz = Math.round(calibration.refreshHz)
+      currentNodeRef.current = node
+      setCurrentNode(node)
 
-      const runner = new TrialRunner(frameSource, refreshHz)
-      runnerRef.current = runner
-
-      const trialResult = await runner.runTrial(trialNode, (phaseIndex) => {
-        drawPhase(presenter, trialNode.phases[phaseIndex])
-      })
-
-      runnerRef.current = null
-      presenter.drawBlank()
-      setResult(trialResult)
-      setStage("done")
+      switch (node.type) {
+        case "consent":
+        case "instructions":
+          return
+        case "trial":
+          await runTrialNode(node)
+          return
+        case "end":
+          await finishAtEnd(node)
+          return
+        default:
+          throw new Error(
+            `Unsupported node type "${(node as { type: string }).type}" (node "${nodeId}"): this runtime supports consent, instructions, trial, and end nodes only.`,
+          )
+      }
     } catch (err) {
-      runnerRef.current = null
       setError(err instanceof Error ? err.message : String(err))
-      setStage("consent")
     }
+  }
+
+  async function runTrialNode(node: TrialNode): Promise<void> {
+    const presenter = presenterRef.current
+    const sid = sessionIdRef.current
+    if (!presenter || !sid) throw new Error("Runtime is not ready to run a trial.")
+
+    const frameSource = new BrowserFrameSource()
+
+    // The canvas is hidden until a trial node is current; wait a frame for
+    // React to show it, then re-measure so the backing store isn't 0x0.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    presenter.resize()
+
+    // Measure the real display refresh rate once so phase frame counts match
+    // the actual monitor rather than assuming 60Hz.
+    if (refreshHzRef.current === null) {
+      const calibration = await runCalibration(frameSource, { sampleFrames: 30 })
+      refreshHzRef.current = Math.round(calibration.refreshHz)
+    }
+    const refreshHz = refreshHzRef.current
+
+    // The keydown handler must not route input to a stale runner.
+    const runner = new TrialRunner(frameSource, refreshHz)
+    runnerRef.current = runner
+    const result = await runner.runTrial(node, (phaseIndex) => {
+      drawPhase(presenter, node.phases[phaseIndex])
+    })
+    runnerRef.current = null
+    presenter.drawBlank()
+
+    sequenceRef.current += 1
+    // Quality flag is hard-coded "good" in this version; computing it from
+    // tab-visibility and frame-drop rules is a scope cut not yet wired here.
+    await bufferTrial({
+      sessionId: sid,
+      sequenceNumber: sequenceRef.current,
+      nodeId: node.id,
+      stimulusRow: null,
+      response: result.response,
+      reactionTimeMs: result.reactionTimeMs,
+      correct: null,
+      timingEvidence: {
+        refreshHz,
+        phaseRecords: result.phaseRecords,
+        responseTimestamp: result.responseTimestamp,
+        timedOut: result.timedOut,
+      },
+      qualityFlag: "good",
+      uploaded: false,
+    })
+
+    await enterNode(node.next)
+  }
+
+  async function finishAtEnd(_node: EndNode): Promise<void> {
+    const sid = sessionIdRef.current
+    if (!sid || declinedRef.current) return
+
+    // Upload anything still buffered before marking the session complete.
+    await queueRef.current?.flush()
+    await markSessionComplete(sid)
+    queueRef.current?.()
+  }
+
+  function advanceFrom(next: string) {
+    void enterNode(next)
+  }
+
+  function decline(declineNodeId: string) {
+    declinedRef.current = true
+    void enterNode(declineNodeId)
   }
 
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-4 p-6">
-      <p className="text-xs text-muted-foreground">{sessionStatus}</p>
+      {error && <p className="rounded-md border p-3 text-sm text-destructive">{error}</p>}
 
-      {stage === "consent" && (
+      {!error && !currentNode && <p>Loading experiment…</p>}
+
+      {!error && currentNode?.type === "consent" && (
         <section className="flex flex-col gap-3">
-          <p className="whitespace-pre-wrap">{consentNode.markdown}</p>
-          <button
-            type="button"
-            className="self-start rounded-md bg-primary px-4 py-2 text-primary-foreground"
-            onClick={() => void handleContinue()}
-          >
-            Continue
-          </button>
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          <p className="whitespace-pre-wrap">{currentNode.markdown}</p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="rounded-md bg-primary px-4 py-2 text-primary-foreground"
+              onClick={() => advanceFrom(currentNode.next)}
+            >
+              Continue
+            </button>
+            <button
+              type="button"
+              className="rounded-md border px-4 py-2"
+              onClick={() => decline(currentNode.declineNodeId)}
+            >
+              Decline
+            </button>
+          </div>
         </section>
       )}
 
-      {stage === "done" && result && (
+      {!error && currentNode?.type === "instructions" && (
         <section className="flex flex-col gap-3">
-          <p className="text-lg font-medium">{endNode.message}</p>
-          <pre className="overflow-auto rounded-md border p-3 text-xs">
-            {JSON.stringify(result, null, 2)}
-          </pre>
+          <p className="whitespace-pre-wrap">{currentNode.markdown}</p>
+          {currentNode.advanceBy === "button" ? (
+            <button
+              type="button"
+              className="self-start rounded-md bg-primary px-4 py-2 text-primary-foreground"
+              onClick={() => advanceFrom(currentNode.next)}
+            >
+              Continue
+            </button>
+          ) : (
+            <p className="text-sm text-muted-foreground">Press any key to continue.</p>
+          )}
         </section>
+      )}
+
+      {!error && currentNode?.type === "end" && (
+        <p className="text-lg font-medium" data-testid="end-message">
+          {currentNode.message}
+        </p>
       )}
 
       <canvas
         ref={canvasRef}
         className="w-full rounded-md border"
-        style={{ height: "60vh", display: stage === "done" ? "none" : "block" }}
+        style={{ height: "60vh", display: currentNode?.type === "trial" && !error ? "block" : "none" }}
       />
     </main>
   )

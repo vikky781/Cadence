@@ -27,6 +27,11 @@ export async function ensureAnonymousSession(): Promise<string> {
     throw new Error(`Failed to read auth session: ${sessionError.message}`)
   }
   if (sessionData.session) {
+    if (!sessionData.session.user.is_anonymous) {
+      throw new Error(
+        "This browser is signed in as a researcher account, which cannot start participant sessions. Open the participant link in a private window or another browser.",
+      )
+    }
     return sessionData.session.user.id
   }
 
