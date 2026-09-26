@@ -34,7 +34,10 @@ export class TrialRunner {
     this.refreshHz = refreshHz
   }
 
-  runTrial(trialNode: TrialNode): Promise<TrialRunResult> {
+  runTrial(
+    trialNode: TrialNode,
+    onPhaseChange?: (phaseIndex: number) => void,
+  ): Promise<TrialRunResult> {
     this.trialNode = trialNode
     this.acceptInPhases = trialNode.response?.acceptInPhases ?? []
     this.currentPhaseOnsetTimestamp = 0
@@ -53,6 +56,7 @@ export class TrialRunner {
 
         if (result.phaseChanged) {
           this.currentPhaseOnsetTimestamp = record.timestamp
+          onPhaseChange?.(result.currentPhaseIndex)
         }
 
         if (result.isComplete) {
