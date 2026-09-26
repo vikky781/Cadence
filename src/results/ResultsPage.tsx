@@ -93,54 +93,90 @@ function Results({ versionId }: { versionId: string }) {
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
-  return (
-    <main className="mx-auto flex max-w-4xl flex-col gap-4 p-6">
-      <h1 className="text-xl font-medium">Results</h1>
-      <p className="text-xs text-muted-foreground">Version {versionId}</p>
+  const sessionCount = rows ? new Set(rows.map((r) => r.session_id)).size : 0
+  const rts = rows?.map((r) => r.reaction_time_ms).filter((v): v is number => v !== null) ?? []
+  const medianRt = rts.length
+    ? [...rts].sort((x, y) => x - y)[Math.floor((rts.length - 1) / 2)]
+    : null
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      {!error && rows === null && <p>Loading…</p>}
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="eyebrow">Results</p>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight">Trial data</h1>
+          <p className="mt-1 break-all font-mono text-xs text-muted-foreground">version {versionId}</p>
+        </div>
+        {rows && (
+          <button type="button" className="btn btn-primary" disabled={rows.length === 0} onClick={downloadCsv}>
+            Download CSV
+          </button>
+        )}
+      </div>
+
+      {error && (
+        <p role="alert" className="card border-destructive/40 text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      {!error && rows === null && <p className="eyebrow">Loading trials…</p>}
 
       {rows && (
         <>
-          <button
-            type="button"
-            className="self-start rounded-md border px-4 py-2 disabled:opacity-40"
-            disabled={rows.length === 0}
-            onClick={downloadCsv}
-          >
-            Download CSV
-          </button>
-          <table className="w-full border-collapse text-left text-sm">
-            <thead>
-              <tr className="border-b">
-                <th className="p-2">session</th>
-                <th className="p-2">sequence_number</th>
-                <th className="p-2">node_id</th>
-                <th className="p-2">response</th>
-                <th className="p-2">reaction_time_ms</th>
-                <th className="p-2">correct</th>
-                <th className="p-2">quality_flag</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={`${r.session_id}-${r.sequence_number}`} className="border-b">
-                  <td className="p-2 font-mono">{r.session_id.slice(0, 8)}</td>
-                  <td className="p-2">{r.sequence_number}</td>
-                  <td className="p-2">{r.node_id}</td>
-                  <td className="p-2">{r.response === " " ? "(space)" : (r.response ?? "")}</td>
-                  <td className="p-2">{r.reaction_time_ms ?? ""}</td>
-                  <td className="p-2">{r.correct === null ? "" : String(r.correct)}</td>
-                  <td className="p-2">{r.quality_flag}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {rows.length === 0 && <p className="text-sm">No trials recorded for this version yet.</p>}
+          <dl className="grid grid-cols-3 gap-px overflow-hidden rounded-lg border bg-border">
+            {(
+              [
+                ["Sessions", String(sessionCount)],
+                ["Trials", String(rows.length)],
+                ["Median RT", medianRt === null ? "—" : `${medianRt.toFixed(0)} ms`],
+              ] as const
+            ).map(([k, v]) => (
+              <div key={k} className="bg-card px-4 py-3">
+                <dt className="eyebrow">{k}</dt>
+                <dd className="mt-1 font-mono text-xl tabular-nums">{v}</dd>
+              </div>
+            ))}
+          </dl>
+
+          {rows.length === 0 ? (
+            <div className="card text-sm text-muted-foreground">
+              No trials yet. Share the participant link from the editor; completed trials appear here.
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border bg-card">
+              <table className="w-full border-collapse text-left text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/60">
+                    {["Session", "Seq", "Node", "Response", "RT (ms)", "Correct", "Quality"].map((h) => (
+                      <th key={h} scope="col" className="eyebrow px-4 py-2.5 font-medium whitespace-nowrap">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="font-mono text-[13px] tabular-nums">
+                  {rows.map((r) => (
+                    <tr key={`${r.session_id}-${r.sequence_number}`} className="border-b last:border-0 hover:bg-muted/40">
+                      <td className="px-4 py-2.5 text-muted-foreground">{r.session_id.slice(0, 8)}</td>
+                      <td className="px-4 py-2.5">{r.sequence_number}</td>
+                      <td className="px-4 py-2.5">{r.node_id}</td>
+                      <td className="px-4 py-2.5">{r.response === " " ? "Space" : (r.response ?? "—")}</td>
+                      <td className="px-4 py-2.5 text-right">{r.reaction_time_ms === null ? "—" : r.reaction_time_ms.toFixed(1)}</td>
+                      <td className="px-4 py-2.5">{r.correct === null ? "—" : String(r.correct)}</td>
+                      <td className="px-4 py-2.5">
+                        <span className={r.quality_flag === "good" ? "tag border-signal/40 text-signal" : "tag border-destructive/40 text-destructive"}>
+                          {r.quality_flag}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </>
       )}
-    </main>
+    </div>
   )
 }
 
@@ -153,7 +189,9 @@ export default function ResultsPage() {
         versionId ? (
           <Results versionId={versionId} />
         ) : (
-          <p className="p-6 text-destructive">Missing ?version=&lt;experiment version id&gt; in the URL.</p>
+          <p role="alert" className="card text-sm text-destructive">
+            This link is missing a study version. Open results from the editor after publishing.
+          </p>
         )
       }
     </AuthGate>

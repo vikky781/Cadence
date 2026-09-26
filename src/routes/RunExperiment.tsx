@@ -236,61 +236,83 @@ export default function RunExperiment() {
     void enterNode(declineNodeId)
   }
 
+  const inTrial = currentNode?.type === "trial" && !error
+
   return (
-    <main className="mx-auto flex max-w-2xl flex-col gap-4 p-6">
-      {error && <p className="rounded-md border p-3 text-sm text-destructive">{error}</p>}
-
-      {!error && !currentNode && <p>Loading experiment…</p>}
-
-      {!error && currentNode?.type === "consent" && (
-        <section className="flex flex-col gap-3">
-          <p className="whitespace-pre-wrap">{currentNode.markdown}</p>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              className="rounded-md bg-primary px-4 py-2 text-primary-foreground"
-              onClick={() => advanceFrom(currentNode.id, currentNode.next)}
-            >
-              Continue
-            </button>
-            <button
-              type="button"
-              className="rounded-md border px-4 py-2"
-              onClick={() => decline(currentNode.id, currentNode.declineNodeId)}
-            >
-              Decline
-            </button>
+    <main className="flex min-h-dvh items-center justify-center bg-background px-4 py-10 font-sans text-foreground">
+      <div className="w-full max-w-xl">
+        {error && (
+          <div role="alert" className="card border-destructive/40">
+            <p className="eyebrow text-destructive">This study could not continue</p>
+            <p className="mt-2 text-sm">{error}</p>
           </div>
-        </section>
-      )}
+        )}
 
-      {!error && currentNode?.type === "instructions" && (
-        <section className="flex flex-col gap-3">
-          <p className="whitespace-pre-wrap">{currentNode.markdown}</p>
-          {currentNode.advanceBy === "button" ? (
-            <button
-              type="button"
-              className="self-start rounded-md bg-primary px-4 py-2 text-primary-foreground"
-              onClick={() => advanceFrom(currentNode.id, currentNode.next)}
-            >
-              Continue
-            </button>
-          ) : (
-            <p className="text-sm text-muted-foreground">Press any key to continue.</p>
-          )}
-        </section>
-      )}
+        {!error && !currentNode && (
+          <p className="eyebrow text-center" aria-live="polite">
+            Loading study…
+          </p>
+        )}
 
-      {!error && currentNode?.type === "end" && (
-        <p className="text-lg font-medium" data-testid="end-message">
-          {currentNode.message}
-        </p>
-      )}
+        {!error && currentNode?.type === "consent" && (
+          <section className="card flex flex-col gap-6 p-6 sm:p-8">
+            <p className="eyebrow">Consent</p>
+            <p className="text-lg leading-relaxed whitespace-pre-wrap">{currentNode.markdown}</p>
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => advanceFrom(currentNode.id, currentNode.next)}
+              >
+                Continue
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => decline(currentNode.id, currentNode.declineNodeId)}
+              >
+                Decline
+              </button>
+            </div>
+          </section>
+        )}
 
+        {!error && currentNode?.type === "instructions" && (
+          <section className="card flex flex-col gap-6 p-6 sm:p-8">
+            <p className="eyebrow">Instructions</p>
+            <p className="text-lg leading-relaxed whitespace-pre-wrap">{currentNode.markdown}</p>
+            {currentNode.advanceBy === "button" ? (
+              <button
+                type="button"
+                className="btn btn-primary self-start"
+                onClick={() => advanceFrom(currentNode.id, currentNode.next)}
+              >
+                Continue
+              </button>
+            ) : (
+              <p className="eyebrow">Press any key to continue</p>
+            )}
+          </section>
+        )}
+
+        {!error && currentNode?.type === "end" && (
+          <section className="card flex flex-col gap-2 p-6 text-center sm:p-8">
+            <p className="eyebrow">Finished</p>
+            <p className="text-xl font-medium" data-testid="end-message">
+              {currentNode.message}
+            </p>
+            <p className="text-sm text-muted-foreground">You can close this tab.</p>
+          </section>
+        )}
+      </div>
+
+      {/* Full-bleed stage during trials, so stimulus size and position are
+          fixed to the viewport rather than to the page layout. */}
       <canvas
         ref={canvasRef}
-        className="w-full rounded-md border"
-        style={{ height: "60vh", display: currentNode?.type === "trial" && !error ? "block" : "none" }}
+        aria-label="Experiment stimulus"
+        className="fixed inset-0 h-dvh w-screen"
+        style={{ display: inTrial ? "block" : "none" }}
       />
     </main>
   )

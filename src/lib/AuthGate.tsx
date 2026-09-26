@@ -1,5 +1,7 @@
 import type { Session } from "@supabase/supabase-js"
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useState, type FormEvent, type ReactNode } from "react"
+
+import { AppShell } from "./AppShell"
 
 import { getSupabaseClient } from "../runtime/session"
 
@@ -44,39 +46,74 @@ export function useAuthSession(): AuthState {
 export function AuthGate({ children }: { children: (session: Session) => ReactNode }) {
   const auth = useAuthSession()
   const [email, setEmail] = useState("")
-  const [message, setMessage] = useState<string | null>(null)
+  const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null)
+  const [sending, setSending] = useState(false)
 
-  if (auth.status === "loading") return <p className="p-6">Loading…</p>
-  if (auth.status === "error") return <p className="p-6 text-destructive">{auth.message}</p>
-  if (auth.status === "signed-in") return <>{children(auth.session)}</>
+  if (auth.status === "loading") {
+    return (
+      <AppShell>
+        <p className="eyebrow">Checking your session…</p>
+      </AppShell>
+    )
+  }
+  if (auth.status === "error") {
+    return (
+      <AppShell>
+        <p role="alert" className="card border-destructive/40 text-sm text-destructive">{auth.message}</p>
+      </AppShell>
+    )
+  }
+  if (auth.status === "signed-in") {
+    return <AppShell email={auth.session.user.email}>{children(auth.session)}</AppShell>
+  }
 
-  async function sendMagicLink() {
+  async function sendMagicLink(e: FormEvent) {
+    e.preventDefault()
+    setSending(true)
     setMessage(null)
     const { error } = await getSupabaseClient().auth.signInWithOtp({
       email,
       options: { emailRedirectTo: window.location.href },
     })
-    setMessage(error ? `Error: ${error.message}` : "Magic link sent. Check your email.")
+    setSending(false)
+    setMessage(
+      error
+        ? { tone: "error", text: `Could not send the link: ${error.message}` }
+        : { tone: "ok", text: `Sign-in link sent to ${email}. Open it on this device to continue.` },
+    )
   }
 
   return (
-    <main className="mx-auto flex max-w-md flex-col gap-3 p-6">
-      <h1 className="text-lg font-medium">Researcher sign-in</h1>
-      <input
-        type="email"
-        className="rounded-md border px-3 py-2"
-        placeholder="you@example.com"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-      />
-      <button
-        type="button"
-        className="self-start rounded-md bg-primary px-4 py-2 text-primary-foreground"
-        onClick={() => void sendMagicLink()}
-      >
-        Send magic link
-      </button>
-      {message && <p className="text-sm">{message}</p>}
-    </main>
+    <AppShell>
+      <div className="mx-auto mt-10 max-w-sm">
+        <p className="eyebrow">Researcher access</p>
+        <h1 className="mt-2 text-2xl font-semibold tracking-tight">Sign in to build and publish studies</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          We email you a one-time link. Participants never need an account.
+        </p>
+        <form className="card mt-6 flex flex-col gap-4" onSubmit={(e) => void sendMagicLink(e)}>
+          <label className="lbl">
+            Email
+            <input
+              type="email"
+              required
+              autoComplete="email"
+              className="field"
+              placeholder="you@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </label>
+          <button type="submit" className="btn btn-primary" disabled={sending}>
+            {sending ? "Sending…" : "Send magic link"}
+          </button>
+          {message && (
+            <p role="status" className={message.tone === "error" ? "text-sm text-destructive" : "text-sm text-signal"}>
+              {message.text}
+            </p>
+          )}
+        </form>
+      </div>
+    </AppShell>
   )
 }

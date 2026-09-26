@@ -281,15 +281,21 @@ function Editor({ session }: { session: Session }) {
     setCopied(true)
   }
 
-  const inputClass = "w-full rounded-md border px-2 py-1"
+  const inputClass = "field"
 
   return (
-    <main className="mx-auto flex max-w-3xl flex-col gap-5 p-6">
-      <h1 className="text-xl font-medium">Experiment editor</h1>
-      <p className="text-xs text-muted-foreground">Signed in as {authorEmail}</p>
+    <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="flex min-w-0 flex-col gap-8">
+      <div>
+        <p className="eyebrow">Study editor</p>
+        <h1 className="mt-2 text-2xl font-semibold tracking-tight">Build a study</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Define the screens participants move through, check the design, then publish a link.
+        </p>
+      </div>
 
-      <section className="flex flex-col gap-2">
-        <label className="text-sm">
+      <section className="card grid gap-4 sm:grid-cols-[1fr_1fr_140px]">
+        <label className="lbl">
           Title
           <input
             className={inputClass}
@@ -297,7 +303,7 @@ function Editor({ session }: { session: Session }) {
             onChange={(e) => updateForm({ title: e.target.value })}
           />
         </label>
-        <label className="text-sm">
+        <label className="lbl">
           Description
           <input
             className={inputClass}
@@ -305,7 +311,7 @@ function Editor({ session }: { session: Session }) {
             onChange={(e) => updateForm({ description: e.target.value })}
           />
         </label>
-        <label className="text-sm">
+        <label className="lbl">
           Estimated minutes
           <input
             className={inputClass}
@@ -322,11 +328,14 @@ function Editor({ session }: { session: Session }) {
       </datalist>
 
       <section className="flex flex-col gap-3">
-        <h2 className="font-medium">Nodes</h2>
+        <div className="flex items-baseline justify-between">
+          <h2 className="text-base font-semibold">Screens</h2>
+          <span className="eyebrow">{form.nodes.length} nodes</span>
+        </div>
         {form.nodes.map((n) => (
-          <div key={n.uid} className="flex flex-col gap-2 rounded-md border p-3">
+          <div key={n.uid} className="card flex flex-col gap-3">
             <div className="flex gap-2">
-              <label className="flex-1 text-sm">
+              <label className="lbl flex-1">
                 id
                 <input
                   className={inputClass}
@@ -334,7 +343,7 @@ function Editor({ session }: { session: Session }) {
                   onChange={(e) => updateNode(n.uid, { id: e.target.value })}
                 />
               </label>
-              <label className="text-sm">
+              <label className="lbl">
                 type
                 <select
                   className={inputClass}
@@ -350,7 +359,7 @@ function Editor({ session }: { session: Session }) {
             </div>
 
             {(n.type === "consent" || n.type === "instructions") && (
-              <label className="text-sm">
+              <label className="lbl">
                 markdown
                 <textarea
                   className={inputClass}
@@ -361,7 +370,7 @@ function Editor({ session }: { session: Session }) {
               </label>
             )}
             {n.type === "consent" && (
-              <label className="text-sm">
+              <label className="lbl">
                 declineNodeId
                 <input
                   className={inputClass}
@@ -372,7 +381,7 @@ function Editor({ session }: { session: Session }) {
               </label>
             )}
             {n.type === "instructions" && (
-              <label className="text-sm">
+              <label className="lbl">
                 advanceBy
                 <select
                   className={inputClass}
@@ -388,19 +397,19 @@ function Editor({ session }: { session: Session }) {
             )}
             {n.type === "trial" && (
               <>
-                <label className="text-sm">
+                <label className="lbl">
                   phases (JSON)
                   <textarea
-                    className={`${inputClass} font-mono text-xs`}
+                    className={`${inputClass}`}
                     rows={8}
                     value={n.phasesJson}
                     onChange={(e) => updateNode(n.uid, { phasesJson: e.target.value })}
                   />
                 </label>
-                <label className="text-sm">
+                <label className="lbl">
                   response (JSON, optional)
                   <textarea
-                    className={`${inputClass} font-mono text-xs`}
+                    className={`${inputClass}`}
                     rows={4}
                     value={n.responseJson}
                     onChange={(e) => updateNode(n.uid, { responseJson: e.target.value })}
@@ -409,7 +418,7 @@ function Editor({ session }: { session: Session }) {
               </>
             )}
             {n.type !== "end" && (
-              <label className="text-sm">
+              <label className="lbl">
                 next
                 <input
                   className={inputClass}
@@ -421,7 +430,7 @@ function Editor({ session }: { session: Session }) {
             )}
             {n.type === "end" && (
               <>
-                <label className="text-sm">
+                <label className="lbl">
                   message
                   <input
                     className={inputClass}
@@ -429,7 +438,7 @@ function Editor({ session }: { session: Session }) {
                     onChange={(e) => updateNode(n.uid, { message: e.target.value })}
                   />
                 </label>
-                <label className="text-sm">
+                <label className="lbl">
                   redirect (optional URL)
                   <input
                     className={inputClass}
@@ -442,7 +451,7 @@ function Editor({ session }: { session: Session }) {
 
             <button
               type="button"
-              className="self-start text-sm text-destructive"
+              className="btn btn-quiet self-start"
               onClick={() => updateForm({ nodes: form.nodes.filter((x) => x.uid !== n.uid) })}
             >
               Remove node
@@ -451,17 +460,17 @@ function Editor({ session }: { session: Session }) {
         ))}
         <button
           type="button"
-          className="self-start rounded-md border px-3 py-1 text-sm"
+          className="btn btn-sm self-start"
           onClick={() =>
             updateForm({ nodes: [...form.nodes, blankNode("instructions", `node-${form.nodes.length + 1}`)] })
           }
         >
-          Add node
+          Add screen
         </button>
       </section>
 
-      <label className="text-sm">
-        Entry node
+      <label className="lbl card">
+        First screen (entry)
         <select
           className={inputClass}
           value={form.entry}
@@ -475,89 +484,108 @@ function Editor({ session }: { session: Session }) {
         </select>
       </label>
 
-      <div className="flex gap-2">
+      </div>
+
+      <aside className="flex flex-col gap-4 lg:sticky lg:top-24 lg:self-start">
+      <div className="card flex flex-col gap-3">
+        <p className="eyebrow">Check & publish</p>
+      <div className="grid grid-cols-2 gap-2">
         <button
           type="button"
-          className="rounded-md border px-4 py-2"
+          className="btn"
           onClick={runLinter}
         >
           Run Linter
         </button>
         <button
           type="button"
-          className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-40"
+          className="btn btn-primary"
           disabled={!canPublish || publishing}
           onClick={() => void publish()}
         >
-          Publish
+          {publishing ? "Publishing…" : "Publish"}
         </button>
       </div>
-
-      {formErrors.length > 0 && (
-        <ul className="list-disc pl-5 text-sm text-destructive">
-          {formErrors.map((e, i) => (
-            <li key={i}>{e}</li>
-          ))}
-        </ul>
+      {!canPublish && (
+        <p className="text-xs text-muted-foreground">
+          {lintRun && lintRun.signature === signature
+            ? "Fix the errors below to publish."
+            : "Run the checks on the current version to enable publishing."}
+        </p>
       )}
-      {zodIssues.length > 0 && (
-        <div>
-          <p className="text-sm font-medium text-destructive">Schema errors</p>
-          <ul className="list-disc pl-5 text-sm text-destructive">
-            {zodIssues.map((e, i) => (
+      </div>
+
+      {(formErrors.length > 0 || zodIssues.length > 0) && (
+        <div role="alert" className="card flex flex-col gap-2 border-destructive/40">
+          <p className="eyebrow text-destructive">Fix before checking</p>
+          <ul className="flex flex-col gap-1.5 text-sm text-destructive">
+            {[...formErrors, ...zodIssues].map((e, i) => (
               <li key={i}>{e}</li>
             ))}
           </ul>
         </div>
       )}
+
       {lintRun && lintRun.signature === signature && (
-        <div className="flex flex-col gap-2 text-sm">
+        <div className="card flex flex-col gap-4">
+          <p className={lintRun.result.valid ? "text-sm font-medium text-signal" : "text-sm font-medium text-destructive"}>
+            {lintRun.result.valid
+              ? "No errors: ready to publish."
+              : `${lintRun.result.errors.length} error${lintRun.result.errors.length === 1 ? "" : "s"} blocking publish.`}
+          </p>
           {(
             [
-              ["Errors", lintRun.result.errors],
-              ["Warnings", lintRun.result.warnings],
-              ["Info", lintRun.result.infos],
+              ["Errors", lintRun.result.errors, "text-destructive"],
+              ["Warnings", lintRun.result.warnings, "text-[#8A5A00]"],
+              ["Info", lintRun.result.infos, "text-graphite"],
             ] as const
-          ).map(([label, issues]) => (
-            <div key={label}>
-              <p className="font-medium">
-                {label} ({issues.length})
+          ).map(([label, issues, tone]) => (
+            <div key={label} className="flex flex-col gap-2">
+              <p className="eyebrow flex justify-between">
+                <span>{label}</span>
+                <span className={issues.length > 0 ? tone : ""}>{issues.length}</span>
               </p>
-              <ul className="list-disc pl-5">
-                {issues.map((issue, i) => (
-                  <li key={i}>
-                    [{issue.rule}] {issue.nodeId ? `${issue.nodeId}: ` : ""}
-                    {issue.message}
-                  </li>
-                ))}
-              </ul>
+              {issues.length > 0 && (
+                <ul className="flex flex-col gap-2">
+                  {issues.map((issue, i) => (
+                    <li key={i} className="flex flex-col gap-1 border-l-2 border-current pl-3 text-sm">
+                      <span className={`font-mono text-[11px] ${tone}`}>
+                        {issue.rule}
+                        {issue.nodeId ? ` · ${issue.nodeId}` : ""}
+                      </span>
+                      <span className="text-foreground">{issue.message}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           ))}
-          {lintRun.result.valid && <p className="text-green-700">No errors: ready to publish.</p>}
         </div>
       )}
 
-      {publishError && <p className="text-sm text-destructive">{publishError}</p>}
+      {publishError && (
+        <p role="alert" className="card border-destructive/40 text-sm text-destructive">
+          {publishError}
+        </p>
+      )}
       {publishedVersionId && (
-        <div className="flex flex-col gap-2 rounded-md border p-3 text-sm">
-          <p>
-            Published version id: <code data-testid="version-id">{publishedVersionId}</code>
-          </p>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              className="rounded-md border px-3 py-1"
-              onClick={() => void copyLink()}
-            >
+        <div className="card flex flex-col gap-3 border-signal/50">
+          <p className="eyebrow text-signal">Published · version {publishedCount}</p>
+          <code data-testid="version-id" className="break-all font-mono text-xs text-muted-foreground">
+            {publishedVersionId}
+          </code>
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" className="btn btn-signal btn-sm" onClick={() => void copyLink()}>
               {copied ? "Copied" : "Copy participant link"}
             </button>
-            <a className="underline" href={`/results?version=${publishedVersionId}`}>
+            <a className="btn btn-sm" href={`/results?version=${publishedVersionId}`}>
               View results
             </a>
           </div>
         </div>
       )}
-    </main>
+      </aside>
+    </div>
   )
 }
 
