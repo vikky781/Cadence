@@ -53,6 +53,30 @@ describe("FrameClock", () => {
     expect(records).toHaveLength(1)
   })
 
+  it("stop() called from within onFrame prevents the next frame from being scheduled", () => {
+    const source = new ManualFrameSource()
+    const clock = new FrameClock(source)
+    const records: FrameRecord[] = []
+
+    clock.start((record) => {
+      records.push(record)
+      if (record.interval !== null) {
+        clock.stop()
+      }
+    })
+
+    source.advance(16.667) // first frame: interval null, does not stop
+    expect(source.getPendingCount()).toBe(1)
+
+    source.advance(16.667) // second frame: interval non-null, calls stop()
+    expect(records).toHaveLength(2)
+    expect(source.getPendingCount()).toBe(0)
+    expect(clock.isRunning()).toBe(false)
+
+    source.advance(16.667)
+    expect(records).toHaveLength(2)
+  })
+
   it("throws if start() is called a second time without an intervening stop()", () => {
     const source = new ManualFrameSource()
     const clock = new FrameClock(source)

@@ -40,7 +40,12 @@ export class FrameClock {
 
       onFrame(record)
 
-      this.handle = this.frameSource.requestFrame(tick)
+      // onFrame may call stop() synchronously (e.g. once it has collected
+      // enough samples); only reschedule if that didn't happen, otherwise
+      // stopping from within the callback would never actually take effect.
+      if (this.running) {
+        this.handle = this.frameSource.requestFrame(tick)
+      }
     }
 
     this.handle = this.frameSource.requestFrame(tick)
