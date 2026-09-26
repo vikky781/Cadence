@@ -1,5 +1,5 @@
 import type { Session } from "@supabase/supabase-js"
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { ExperimentSchema, lintExperiment, type Experiment, type LintResult } from "../dsl"
 import { AuthGate } from "../lib/AuthGate"
@@ -169,25 +169,101 @@ interface LintRun {
   result: LintResult
 }
 
+const STARTER_FORM: FormState = {
+  title: "Reaction time study",
+  description: "Press SPACE when the stimulus appears.",
+  estimatedMinutes: "2",
+  nodes: STARTER_NODES,
+  entry: "consent-1",
+}
+
+// The draft is kept in this browser's localStorage so a reload doesn't lose
+// work. It also remembers which study it belongs to and how many versions
+// were published, so the next publish becomes version N+1 of the same study.
+interface Draft {
+  form: FormState
+  experimentId: string
+  experimentRowExists: boolean
+  publishedCount: number
+  publishedVersionId: string | null
+}
+
+function draftKey(userId: string): string {
+  return `cadence:editor-draft:${userId}`
+}
+
+function loadDraft(userId: string): Draft | null {
+  try {
+    const raw = window.localStorage.getItem(draftKey(userId))
+    if (!raw) return null
+    const draft = JSON.parse(raw) as Draft
+    if (!draft?.form || !Array.isArray(draft.form.nodes) || typeof draft.experimentId !== "string") {
+      return null
+    }
+    return draft
+  } catch {
+    return null
+  }
+}
+
+function saveDraft(userId: string, draft: Draft): void {
+  try {
+    window.localStorage.setItem(draftKey(userId), JSON.stringify(draft))
+  } catch {
+    // Storage can be unavailable (private mode, quota); the editor still works.
+  }
+}
+
+function clearDraft(userId: string): void {
+  try {
+    window.localStorage.removeItem(draftKey(userId))
+  } catch {
+    // Ignore: nothing to clear if storage is unavailable.
+  }
+}
+
 function Editor({ session }: { session: Session }) {
-  const [form, setForm] = useState<FormState>({
-    title: "Reaction time study",
-    description: "Press SPACE when the stimulus appears.",
-    estimatedMinutes: "2",
-    nodes: STARTER_NODES,
-    entry: "consent-1",
-  })
-  const [experimentId] = useState(() => crypto.randomUUID())
-  const [experimentRowExists, setExperimentRowExists] = useState(false)
-  const [publishedCount, setPublishedCount] = useState(0)
+  const userId = session.user.id
+  const [initialDraft] = useState(() => loadDraft(userId))
+  const [form, setForm] = useState<FormState>(initialDraft?.form ?? STARTER_FORM)
+  const [experimentId, setExperimentId] = useState(
+    () => initialDraft?.experimentId ?? crypto.randomUUID(),
+  )
+  const [experimentRowExists, setExperimentRowExists] = useState(
+    initialDraft?.experimentRowExists ?? false,
+  )
+  const [publishedCount, setPublishedCount] = useState(initialDraft?.publishedCount ?? 0)
 
   const [formErrors, setFormErrors] = useState<string[]>([])
   const [zodIssues, setZodIssues] = useState<string[]>([])
   const [lintRun, setLintRun] = useState<LintRun | null>(null)
-  const [publishedVersionId, setPublishedVersionId] = useState<string | null>(null)
+  const [publishedVersionId, setPublishedVersionId] = useState<string | null>(
+    initialDraft?.publishedVersionId ?? null,
+  )
   const [publishError, setPublishError] = useState<string | null>(null)
   const [publishing, setPublishing] = useState(false)
   const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    saveDraft(userId, { form, experimentId, experimentRowExists, publishedCount, publishedVersionId })
+  }, [userId, form, experimentId, experimentRowExists, publishedCount, publishedVersionId])
+
+  function startNewStudy() {
+    if (!window.confirm("Start a new study? This clears the current draft from this browser. Published studies are not affected.")) {
+      return
+    }
+    clearDraft(userId)
+    setForm(STARTER_FORM)
+    setExperimentId(crypto.randomUUID())
+    setExperimentRowExists(false)
+    setPublishedCount(0)
+    setPublishedVersionId(null)
+    setLintRun(null)
+    setFormErrors([])
+    setZodIssues([])
+    setPublishError(null)
+    setCopied(false)
+  }
 
   const signature = useMemo(() => JSON.stringify(form), [form])
   const nodeIds = form.nodes.map((n) => n.id)
@@ -286,12 +362,20 @@ function Editor({ session }: { session: Session }) {
   return (
     <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_340px]">
       <div className="flex min-w-0 flex-col gap-8">
-      <div>
-        <p className="eyebrow">Study editor</p>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight">Build a study</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Define the screens participants move through, check the design, then publish a link.
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="eyebrow">Study editor</p>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight">Build a study</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Define the screens participants move through, check the design, then publish a link.
+          </p>
+          <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+            Draft saved in this browser{publishedCount > 0 ? ` · ${publishedCount} version${publishedCount === 1 ? "" : "s"} published` : ""}
+          </p>
+        </div>
+        <button type="button" className="btn btn-sm" onClick={startNewStudy}>
+          Start a new study
+        </button>
       </div>
 
       <section className="card grid gap-4 sm:grid-cols-[1fr_1fr_140px]">
