@@ -7,6 +7,7 @@ import {
   createSession,
   ensureAnonymousSession,
   getSupabaseClient,
+  markSessionAbandoned,
   markSessionComplete,
   runCalibration,
   startUploadQueue,
@@ -215,12 +216,23 @@ export default function RunExperiment() {
     queueRef.current?.()
   }
 
-  function advanceFrom(next: string) {
+  // enterNode updates currentNodeRef synchronously before its first await, so
+  // a second click from the same (now stale) screen is ignored instead of
+  // entering the next node twice (e.g. running the same trial concurrently).
+  function advanceFrom(fromNodeId: string, next: string) {
+    if (currentNodeRef.current?.id !== fromNodeId) return
     void enterNode(next)
   }
 
-  function decline(declineNodeId: string) {
+  function decline(fromNodeId: string, declineNodeId: string) {
+    if (currentNodeRef.current?.id !== fromNodeId) return
     declinedRef.current = true
+    const sid = sessionIdRef.current
+    if (sid) {
+      markSessionAbandoned(sid).catch((err: unknown) =>
+        setError(err instanceof Error ? err.message : String(err)),
+      )
+    }
     void enterNode(declineNodeId)
   }
 
@@ -237,14 +249,14 @@ export default function RunExperiment() {
             <button
               type="button"
               className="rounded-md bg-primary px-4 py-2 text-primary-foreground"
-              onClick={() => advanceFrom(currentNode.next)}
+              onClick={() => advanceFrom(currentNode.id, currentNode.next)}
             >
               Continue
             </button>
             <button
               type="button"
               className="rounded-md border px-4 py-2"
-              onClick={() => decline(currentNode.declineNodeId)}
+              onClick={() => decline(currentNode.id, currentNode.declineNodeId)}
             >
               Decline
             </button>
@@ -259,7 +271,7 @@ export default function RunExperiment() {
             <button
               type="button"
               className="self-start rounded-md bg-primary px-4 py-2 text-primary-foreground"
-              onClick={() => advanceFrom(currentNode.next)}
+              onClick={() => advanceFrom(currentNode.id, currentNode.next)}
             >
               Continue
             </button>

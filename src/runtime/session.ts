@@ -110,23 +110,34 @@ export async function uploadTrial(
   }
 }
 
-export async function markSessionComplete(sessionId: string): Promise<void> {
+async function setSessionStatus(
+  sessionId: string,
+  status: "completed" | "abandoned",
+): Promise<void> {
   const supabase = getSupabaseClient()
 
   // .select("id") so that an update filtered out by RLS (which returns no
   // error, just zero rows) is detected instead of failing silently.
   const { data, error } = await supabase
     .from("sessions")
-    .update({ status: "completed" })
+    .update({ status })
     .eq("id", sessionId)
     .select("id")
 
   if (error) {
-    throw new Error(`Failed to mark session complete: ${error.message}`)
+    throw new Error(`Failed to mark session ${status}: ${error.message}`)
   }
   if (!data || data.length === 0) {
     throw new Error(
-      `Failed to mark session ${sessionId} complete: no row was updated (wrong id, or not permitted by RLS).`,
+      `Failed to mark session ${sessionId} ${status}: no row was updated (wrong id, or not permitted by RLS).`,
     )
   }
+}
+
+export async function markSessionComplete(sessionId: string): Promise<void> {
+  await setSessionStatus(sessionId, "completed")
+}
+
+export async function markSessionAbandoned(sessionId: string): Promise<void> {
+  await setSessionStatus(sessionId, "abandoned")
 }

@@ -24,6 +24,29 @@ function Results({ versionId }: { versionId: string }) {
       try {
         const supabase = getSupabaseClient()
 
+        // RLS hides other researchers' sessions/trials by returning empty
+        // results, not an error, so check ownership explicitly first rather
+        // than showing a misleading "no trials yet".
+        const { data: version, error: versionError } = await supabase
+          .from("experiment_versions")
+          .select("experiment_id")
+          .eq("id", versionId)
+          .maybeSingle()
+        if (versionError) throw new Error(`Failed to load version: ${versionError.message}`)
+        if (!version) throw new Error(`No experiment version with id ${versionId}.`)
+
+        const { data: experiment, error: experimentError } = await supabase
+          .from("experiments")
+          .select("id")
+          .eq("id", version.experiment_id as string)
+          .maybeSingle()
+        if (experimentError) throw new Error(`Failed to load experiment: ${experimentError.message}`)
+        if (!experiment) {
+          throw new Error(
+            "This experiment belongs to another researcher account, so its results are not visible to you.",
+          )
+        }
+
         const { data: sessions, error: sessionsError } = await supabase
           .from("sessions")
           .select("id")
@@ -65,7 +88,9 @@ function Results({ versionId }: { versionId: string }) {
     document.body.appendChild(anchor)
     anchor.click()
     anchor.remove()
-    URL.revokeObjectURL(url)
+    // Revoking synchronously can cancel the download: the browser fetches the
+    // blob URL asynchronously after click(), so release it a moment later.
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
   return (

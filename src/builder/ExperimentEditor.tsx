@@ -94,7 +94,14 @@ function buildDsl(
   const errors: string[] = []
   const nodes: Record<string, unknown> = {}
 
+  const seenIds = new Set<string>()
   for (const n of form.nodes) {
+    // Nodes are keyed by id, so a duplicate would silently overwrite another
+    // node and hide it from the schema check and the linter.
+    if (!n.id.trim()) errors.push("A node has an empty id.")
+    if (seenIds.has(n.id)) errors.push(`Duplicate node id "${n.id}": node ids must be unique.`)
+    seenIds.add(n.id)
+
     switch (n.type) {
       case "consent":
         nodes[n.id] = {
@@ -179,6 +186,7 @@ function Editor({ session }: { session: Session }) {
   const [lintRun, setLintRun] = useState<LintRun | null>(null)
   const [publishedVersionId, setPublishedVersionId] = useState<string | null>(null)
   const [publishError, setPublishError] = useState<string | null>(null)
+  const [publishing, setPublishing] = useState(false)
   const [copied, setCopied] = useState(false)
 
   const signature = useMemo(() => JSON.stringify(form), [form])
@@ -219,7 +227,8 @@ function Editor({ session }: { session: Session }) {
   }
 
   async function publish() {
-    if (!lintRun || !canPublish) return
+    if (!lintRun || !canPublish || publishing) return
+    setPublishing(true)
     setPublishError(null)
     try {
       const supabase = getSupabaseClient()
@@ -261,6 +270,8 @@ function Editor({ session }: { session: Session }) {
       setCopied(false)
     } catch (err) {
       setPublishError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPublishing(false)
     }
   }
 
@@ -475,7 +486,7 @@ function Editor({ session }: { session: Session }) {
         <button
           type="button"
           className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-40"
-          disabled={!canPublish}
+          disabled={!canPublish || publishing}
           onClick={() => void publish()}
         >
           Publish
